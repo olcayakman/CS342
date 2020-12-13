@@ -1,6 +1,7 @@
-#define DEBUG 1
+#define DEBUG 0
 #define FIRST_FIT 1
 #define WORST_FIT 0
+#define BUFSIZE 10
 
 int smem_init(int segmentsize); 
 int smem_remove(); 
@@ -12,6 +13,6 @@ int smem_close();
 
 struct segment {
     int segment_size;
-    int segment_pointer;
+    void* segment_pointer;
     struct segment* next;
 };

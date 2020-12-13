@@ -3,10 +3,11 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <semaphore.h>
 
 #include "smemlib.h"
 
-#define SEG_SIZE 128
+#define SEG_SIZE 32000000
 
 int main()
 {
