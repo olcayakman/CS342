@@ -12,4 +12,4 @@ app: 	app.c
 	gcc -Wall -o app app.c  -L. -lvsimplefs
 
 clean: 
-	rm -fr *.o *.a *~ a.out app  vdisk create_format
+	rm -fr *.o *.bin *.a *~ a.out app  vdisk create_format 
