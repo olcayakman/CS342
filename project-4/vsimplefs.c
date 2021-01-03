@@ -12,6 +12,28 @@
 
 #define DEBUG 1
 
+#define BLOCKSIZE 4096
+#define ADDRSIZE 256
+#define NUM_ADDR_PER_BLOCK (BLOCKSIZE/ADDRSIZE)
+
+#define MAX_DIR_ENTRY 256
+#define MAX_FILENAME 64
+#define MAX_PATHNAME 1024
+#define MAX_DIRS 16
+
+#define SUPER_BLOCK 0
+#define SUPER_BLOCK_OFFSET 4096 //burdan emin degilim ne bu?
+
+#define ROOT (SUPER_BLOCK + SUPER_BLOCK_OFFSET)
+#define ROOT_OFFSET (8 * BLOCKSIZE)
+
+#define DIRECTORY_ENTRY_OFFSET 256
+
+#define FAT (ROOT + ROOT_OFFSET)
+#define FAT_BLOCKS 256
+#define FAT_OFFSET 8
+#define MAX_NO_OF_FAT_ENTRIES 112
+
 //hello
 
 /**
@@ -24,15 +46,33 @@ int vdisk_fd; // Global virtual disk file descriptor. Global within the library.
               // Will be assigned with the vsfs_mount call.
               // Any function in this file can use this.
               // Applications will not use  this directly.
-char *fileNames[16];
-off_t fileSizes[16];
-ino_t fileStartBlocks[16];
-FILE *fds[16];
 
-char *openFiles[16];
+struct directory_entry_buf{
+    char* filename;
+    int size;
+    struct fat_buf *first_fat_entry;
+};
+
+struct fat_buf {
+    int memory_block;
+    struct fat_buf *next_fat;
+};
+
+struct fat_buf *fatHead;
+
+char *fileNames[112];
+off_t fileSizes[112];
+ino_t fileStartBlocks[112];
+FILE *fds[112];
+
+
+char *openFiles[MAX_DIRS];
 
 int fileCount = 0;
 int openFileCount = 0;
+
+int noOfFATEntries = 0;
+int *empty_directory[112];
 // ========================================================
 
 // read block k from disk (virtual disk) into buffer block.
@@ -96,6 +136,32 @@ int create_format_vdisk(char *vdiskname, unsigned int m)
 
     // now write the code to format the disk below.
     // .. your code...
+    int i = 0;
+    for(i=0; i < 112; i++){
+        empty_directory[i] = 0;
+    }
+
+    int error = 0;
+    //create superblock and write to it .
+    error = write_block(SUPER_BLOCK, SUPER_BLOCK_OFFSET);
+    if (error == -1) return -1;
+
+    //create root directory, 7 blocks.
+    int i;
+    for (i = 0; i < 7; i++) {
+        error = write_block(SUPER_BLOCK+1+i, DIRECTORY_ENTRY_OFFSET);
+        if (error == -1) return -1;
+    }
+
+    // create FAT here
+    for (i = 0; i < 256; i++) {
+        error = write_block(FAT, FAT_OFFSET);
+        if (error == -1) return -1;
+    }
+    fatHead = malloc(sizeof(struct fat_buf));
+    fatHead->memory_block = 0;
+    fatHead->next_fat = NULL;
+    noOfFATEntries = 0;
 
     return (0);
 }
@@ -126,41 +192,43 @@ int vsfs_umount()
  */
 int vsfs_create(char *filename)
 {
-    //check if file with given name exists
-    if (access(filename, F_OK) == 0)
-    {
-        // file exists
-        if (DEBUG)
-            printf("Cannot create file. File with name %s already exists.\n", filename);
-        return -1;
-    }
-    else
-    {
-        char command[1000];
-        struct stat *stats;
-        // stats = malloc(sizeof(struct stat));
-        // file doesn't exist
-        // create the file. return 0;
-        sprintf(command, "touch %s", filename);
-        if (DEBUG)
-        {
-            printf("File successfully created with name %s\n", filename);
+    // check if file exists in file system.
+    
+    // write filename to root directory
+    struct directory_entry_buf *deb = malloc(sizeof(struct directory_entry_buf));
+    deb->filename = filename;
+    deb->size = 0;
+    struct fat_buf *fatb = find_empty_fat(fatHead);
+    noOfFATEntries++;
+    deb->first_fat_entry = fatb;
+
+    int i;
+    for(i = 0; i < 112; i++){
+        if(empty_directory == 0){
+            break;
         }
-        char path[1000] = "/dev/zero/";
-        strcat(path, filename);
-        stat(path, &stats);
-        // int filesize = stats->st_size;
-        // printf("filesize: %d\n", filesize);
-
-        //initialize info table about file
-        fileNames[fileCount % 16] = filename;
-        fileSizes[fileCount % 16] = stats->st_size;
-        fileStartBlocks[fileCount % 16] = stats->st_ino;
-
-        printf("filecount: %d\n", fileCount);
-        fileCount++;
-        return 0;
     }
+    if( i == 112){
+         if(DEBUG)
+             printf("no space in directory \n");
+         return -1;
+     }
+     
+    int root_offset = (fileCount * MAX_DIR_ENTRY);
+    lseek(vdisk_fd, (off_t)root_offset * i, ROOT);
+
+    int n = write(vdisk_fd, deb, MAX_DIR_ENTRY);
+    if (n != MAX_DIR_ENTRY)
+    {
+        printf("write error\n");
+        return (-1);
+    }
+
+    //write to fat:
+    void *mem_address = malloc(BLOCKSIZE);
+    fatb->memory_block = mem_address;
+    fatb->next_fat = NULL;
+
     return (0);
 }
 
@@ -174,34 +242,45 @@ int vsfs_create(char *filename)
  */
 int vsfs_open(char *filename, int mode)
 {
-    if (MODE_APPEND)
-    {
-        // append-only mode...
-        if (DEBUG)
-            printf("Opening file %s in Append-Only mode.\n", filename);
-        FILE *fp = fopen(filename, "a");
-        openFiles[openFileCount % 16] = filename;
-        fds[openFileCount % 16] = fp;
-        return openFileCount++;
+    if (mode == MODE_READ) {
+        open(filename, O_RDONLY);
+        if (DEBUG) printf("File %s opened in read-only mode.\n", filename);
+    } else if (mode == MODE_APPEND) {
+        open(filename, O_APPEND);
+        if (DEBUG) printf("File %s opened in append-only mode.\n", filename);
     }
-    else if (MODE_READ)
-    {
-        // read-only mode...
-        if (DEBUG)
-            printf("Opening file %s in Read-Only mode.\n", filename);
-        FILE *fp = fopen(filename, "r");
-        openFiles[openFileCount % 16] = filename;
-        fds[openFileCount % 16] = fp;
-        return openFileCount++;
-    }
-    else
-    {
-        // error sitch. should be either read or append mode.
-        // return -1.
-        if (DEBUG)
-            printf("Could not open specified file. Given mode is incorrect.\n");
-        return -1;
-    }
+    
+
+
+    // if (MODE_APPEND)
+    // {
+    //     // append-only mode...
+    //     if (DEBUG)
+    //         printf("Opening file %s in Append-Only mode.\n", filename);
+    //     FILE *fp = fopen(filename, "a");
+    //     openFiles[openFileCount % 16] = filename;
+    //     fds[openFileCount % 16] = fp;
+    //     return openFileCount++;
+    // }
+    // else if (MODE_READ)
+    // {
+    //     // read-only mode...
+    //     if (DEBUG)
+    //         printf("Opening file %s in Read-Only mode.\n", filename);
+    //     FILE *fp = fopen(filename, "r");
+    //     openFiles[openFileCount % 16] = filename;
+    //     fds[openFileCount % 16] = fp;
+    //     return openFileCount++;
+    // }
+    // else
+    // {
+    //     // error sitch. should be either read or append mode.
+    //     // return -1.
+    //     if (DEBUG)
+    //         printf("Could not open specified file. Given mode is incorrect.\n");
+    //     return -1;
+    // }
+    return (0);
 }
 
 /**
@@ -295,4 +374,13 @@ int vsfs_append(int fd, void *buf, int n)
 int vsfs_delete(char *filename)
 {
     return (0);
+}
+
+struct fat_buf* find_empty_fat (struct fat_buf* fathead) {
+    if (fathead->memory_block == 0)
+        return fathead;
+    struct fat_buf* tmp = fathead;
+    while (tmp->next_fat != NULL) tmp = tmp->next_fat; 
+    tmp->next_fat = malloc(sizeof(struct fat_buf));
+    return tmp->next_fat;
 }
