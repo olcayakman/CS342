@@ -1,3 +1,5 @@
+
+
 // Do not change this file //
 
 #define MODE_READ 0
@@ -23,3 +25,4 @@ int vsfs_read(int fd, void *buf, int n);
 int vsfs_append(int fd, void *buf, int n);
 
 int vsfs_delete(char *filename);
+
