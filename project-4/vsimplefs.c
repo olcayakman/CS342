@@ -22,7 +22,7 @@
 #define MAX_DIRS 16
 
 #define SUPER_BLOCK 0
-#define SUPER_BLOCK_OFFSET 4096 //burdan emin degilim ne bu?
+#define SUPER_BLOCK_OFFSET 4096 
 
 #define ROOT (SUPER_BLOCK + SUPER_BLOCK_OFFSET)
 #define ROOT_OFFSET (8 * BLOCKSIZE)
@@ -33,8 +33,8 @@
 #define FAT_BLOCKS 256
 #define FAT_OFFSET 8
 #define MAX_NO_OF_FAT_ENTRIES 112
-
-//hello
+#define MAX_FILE_NO 112
+#define FAT_ENTRY_NO_PER_BLOCK 512
 
 /**
  * Important notice. A process can open at most 16 files simultaneously. 
@@ -47,18 +47,23 @@ int vdisk_fd; // Global virtual disk file descriptor. Global within the library.
               // Any function in this file can use this.
               // Applications will not use  this directly.
 
-struct directory_entry_buf{
+struct root_buf {
     char* filename;
     int size;
-    struct fat_buf *first_fat_entry;
+    int first_fat_entry;
 };
 
 struct fat_buf {
     int memory_block;
-    struct fat_buf *next_fat;
+    // struct fat_buf *next_fat;
+    int next_fat;
 };
 
-struct fat_buf *fatHead;
+struct superblock_buf {
+    int *directory_info[112];
+    int file_number;
+    //int *empty_fat[FAT_BLOCKS * FAT_ENTRY_NO_PER_BLOCK];
+};
 
 char *fileNames[112];
 off_t fileSizes[112];
@@ -107,6 +112,7 @@ int write_block(void *block, int k)
     if (n != BLOCKSIZE)
     {
         printf("write error\n");
+        //if (DEBUG) printf( "k is %d \n",k);
         return (-1);
     }
     return 0;
@@ -136,32 +142,56 @@ int create_format_vdisk(char *vdiskname, unsigned int m)
 
     // now write the code to format the disk below.
     // .. your code...
-    int i = 0;
-    for(i=0; i < 112; i++){
-        empty_directory[i] = 0;
-    }
-
+   
     int error = 0;
     //create superblock and write to it .
-    error = write_block(SUPER_BLOCK, SUPER_BLOCK_OFFSET);
+    
+    printf("\nSize of struct superblock_buf: %d\n\n", ((int) sizeof(struct superblock_buf)));
+
     if (error == -1) return -1;
+    struct superblock_buf *superblock = malloc(sizeof(struct superblock_buf));
+     int i = 0;
+    for(i=0; i < 112; i++){
+        superblock->directory_info[i] = 0;
+        superblock->file_number = 0;
+    }
+
+    if (DEBUG) printf("hata burda\n");
+    error = write_block(superblock, SUPER_BLOCK + SUPER_BLOCK_OFFSET);
+    if (DEBUG) printf("hata burda2\n");
+
+    // for(i=0; i < FAT_BLOCKS * FAT_ENTRY_NO_PER_BLOCK; i++){
+    //     superblock->empty_fat[i] = 0;
+    // }
+    int n;
+    n = write(vdisk_fd, superblock, BLOCKSIZE);
+    if( n != BLOCKSIZE ){
+        printf("write error\n");
+        return (-1);
+    }
 
     //create root directory, 7 blocks.
-    int i;
     for (i = 0; i < 7; i++) {
-        error = write_block(SUPER_BLOCK+1+i, DIRECTORY_ENTRY_OFFSET);
+        struct root_buf *crb = malloc(DIRECTORY_ENTRY_OFFSET);
+        error = write_block(crb, ROOT + (DIRECTORY_ENTRY_OFFSET * i));
         if (error == -1) return -1;
     }
 
     // create FAT here
     for (i = 0; i < 256; i++) {
-        error = write_block(FAT, FAT_OFFSET);
+        struct fat_buf *cfb = malloc(FAT_OFFSET);
+        error = write_block(cfb, FAT + (FAT_OFFSET * i));
         if (error == -1) return -1;
     }
-    fatHead = malloc(sizeof(struct fat_buf));
-    fatHead->memory_block = 0;
-    fatHead->next_fat = NULL;
-    noOfFATEntries = 0;
+
+
+    // struct fat_buf *fatHead;
+    // fatHead = malloc(sizeof(struct fat_buf));
+    // fatHead->memory_block = 0;
+    // fatHead->next_fat = -1;
+    // noOfFATEntries = 0;
+
+    //write(vdisk_fd + FAT, fatHead, FAT_OFFSET);
 
     return (0);
 }
@@ -193,41 +223,50 @@ int vsfs_umount()
 int vsfs_create(char *filename)
 {
     // check if file exists in file system.
+    struct superblock_buf *sb;
+    int n = read(vdisk_fd, sb, SUPER_BLOCK_OFFSET);
+    if( n != SUPER_BLOCK_OFFSET){
+        printf("read error\n");
+        return -1;
+    }
     
-    // write filename to root directory
-    struct directory_entry_buf *deb = malloc(sizeof(struct directory_entry_buf));
-    deb->filename = filename;
-    deb->size = 0;
-    struct fat_buf *fatb = find_empty_fat(fatHead);
-    noOfFATEntries++;
-    deb->first_fat_entry = fatb;
-
+    //find an empty place in directory
+    if( sb->file_number == MAX_FILE_NO){
+        if(DEBUG){
+            printf("There is no place for a new file \n");
+        }
+        return -1;
+    }
     int i;
-    for(i = 0; i < 112; i++){
-        if(empty_directory == 0){
+    for(i = 0; i < MAX_FILE_NO; i++){
+        if(sb->directory_info[i] == 0){
             break;
         }
     }
-    if( i == 112){
-         if(DEBUG)
-             printf("no space in directory \n");
-         return -1;
-     }
-     
-    int root_offset = (fileCount * MAX_DIR_ENTRY);
-    lseek(vdisk_fd, (off_t)root_offset * i, ROOT);
 
-    int n = write(vdisk_fd, deb, MAX_DIR_ENTRY);
-    if (n != MAX_DIR_ENTRY)
-    {
-        printf("write error\n");
-        return (-1);
+    //find an empty place in FAT
+    int j;
+    for(j = 0; j < FAT_BLOCKS * FAT_ENTRY_NO_PER_BLOCK; j++ ){
+        // if( sb->empty_fat[j] == 0){
+        //     sb->empty_fat[j] = 1;
+        //     break;
+        // }
     }
+    sb->directory_info[i] = 1;
+
+    // write filename to root directory
+    struct root_buf *rb = malloc(sizeof(struct root_buf));
+    rb->filename = filename;
+    rb->size = 0;
+    rb->first_fat_entry = j; //CHECK THIS!!! NOT correct...
+    n = write(vdisk_fd + ROOT, rb, ROOT_OFFSET * i);
+
 
     //write to fat:
-    void *mem_address = malloc(BLOCKSIZE);
-    fatb->memory_block = mem_address;
-    fatb->next_fat = NULL;
+    struct fat_buf *fb = malloc(sizeof(struct fat_buf));
+    fb->memory_block = -1;
+    fb->next_fat = -1;
+    write(vdisk_fd + FAT, fb, FAT_OFFSET * j);
 
     return (0);
 }
@@ -376,11 +415,11 @@ int vsfs_delete(char *filename)
     return (0);
 }
 
-struct fat_buf* find_empty_fat (struct fat_buf* fathead) {
-    if (fathead->memory_block == 0)
-        return fathead;
-    struct fat_buf* tmp = fathead;
-    while (tmp->next_fat != NULL) tmp = tmp->next_fat; 
-    tmp->next_fat = malloc(sizeof(struct fat_buf));
-    return tmp->next_fat;
-}
+// struct fat_buf* find_empty_fat (struct fat_buf* fathead) {
+//     if (fathead->memory_block == 0)
+//         return fathead;
+//     struct fat_buf* tmp = fathead;
+//     while (tmp->next_fat != NULL) tmp = tmp->next_fat; 
+//     tmp->next_fat = malloc(sizeof(struct fat_buf));
+//     return tmp->next_fat;
+// }
